@@ -1,7 +1,4 @@
 ﻿using Microsoft.Data.Sqlite;
-using System;
-using System.Collections.Generic;
-using System.Text;
 
 namespace MSL.Data
 {
@@ -12,12 +9,22 @@ namespace MSL.Data
         public static SqliteConnection CreateConnection()
         {
             var connection = new SqliteConnection(ConnectionString);
-            connection.Open();
 
-            // СИСТЕМНАЯ ОШИБКА:
-            // В SQLite по умолчанию отключена поддержка Foreign Keys
-            // Для этого надо прописать: PRAGMA foreign_keys = ON;
-            return connection;
+            try
+            {
+                connection.Open();
+
+                using var command = connection.CreateCommand();
+                command.CommandText = "PRAGMA foreign_keys = ON;";
+                command.ExecuteNonQuery();
+
+                return connection;
+            }
+            catch
+            {
+                connection.Dispose();
+                throw;
+            }
         }
     }
 }

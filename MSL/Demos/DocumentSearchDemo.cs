@@ -1,7 +1,4 @@
 ﻿using MSL.Data;
-using System;
-using System.Collections.Generic;
-using System.Text;
 
 namespace MSL.Demos
 {
@@ -9,36 +6,63 @@ namespace MSL.Demos
     {
         public static void Run()
         {
-            Console.Write("\nВведите ваш допуск (1 - Служебный, 2 - Секретно, 3 - Сов. Секретно): ");
-            string? level = Console.ReadLine();
+            if (UserSession.CurrentEmployee == null)
+            {
+                Console.WriteLine("\n[ОТКАЗ] Сначала необходимо авторизоваться.");
+                return;
+            }
 
-            Console.Write("Поисковый запрос по материалам: ");
+            int clearanceLevel = UserSession.CurrentEmployee.ClearanceLevel;
+
+            Console.Write("\nПоисковый запрос по материалам: ");
             string? term = Console.ReadLine();
+
+            if (string.IsNullOrWhiteSpace(term))
+            {
+                Console.WriteLine("\nВведите поисковый запрос.");
+                return;
+            }
 
             using var connection = DatabaseContext.CreateConnection();
             using var command = connection.CreateCommand();
 
-            // ОШИБКА 1: Уровень допуска передается напрямую от клиента 
-            // ОШИБКА 2: Вторая SQL-инъекция в LIKE: можно закомментировать условие допуска (-- или /*)
-            command.CommandText = $"SELECT id, title, secret_level, content FROM ClassifiedDocuments WHERE secret_level <= {level} AND title LIKE '%{term}%'";
+            command.CommandText = @"
+                SELECT id, title, secret_level, content
+                FROM ClassifiedDocuments
+                WHERE secret_level <= @level
+                AND title LIKE @term;
+            ";
+
+            command.Parameters.AddWithValue("@level", clearanceLevel);
+            command.Parameters.AddWithValue("@term", $"%{term}%");
 
             try
             {
                 using var reader = command.ExecuteReader();
+
                 Console.WriteLine("\n--- РЕЗУЛЬТАТЫ ПОИСКА ---");
+
                 bool found = false;
+
                 while (reader.Read())
                 {
                     found = true;
-                    Console.WriteLine($"[{reader["id"]}] (Гриф: {reader["secret_level"]}) {reader["title"]}");
+
+                    Console.WriteLine(
+                        $"[{reader["id"]}] (Гриф: {reader["secret_level"]}) {reader["title"]}"
+                    );
+
                     Console.WriteLine($"Содержание: {reader["content"]}\n");
                 }
-                if (!found) Console.WriteLine("Документы не найдены.");
+
+                if (!found)
+                {
+                    Console.WriteLine("Документы не найдены.");
+                }
             }
-            catch (Exception ex)
+            catch
             {
-                // ОШИБКА 3: Утечка внутренней структуры базы в сообщении об ошибке (Information Disclosure)
-                Console.WriteLine($"[CRITICAL DB ERROR]: {ex.Message}");
+                Console.WriteLine("[ОШИБКА] Не удалось выполнить поиск документов.");
             }
         }
     }

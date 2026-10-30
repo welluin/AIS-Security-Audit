@@ -1,7 +1,4 @@
 ﻿using MSL.Data;
-using System;
-using System.Collections.Generic;
-using System.Text;
 
 namespace MSL.Demos
 {
@@ -9,29 +6,105 @@ namespace MSL.Demos
     {
         public static void Run()
         {
-            Console.Write("\nФИО Гражданина: ");
+            if (UserSession.CurrentEmployee == null)
+            {
+                Console.WriteLine("\n[ОТКАЗ] Сначала необходимо авторизоваться.");
+                return;
+            }
+
+            Console.Write("\nФИО гражданина: ");
             string? fio = Console.ReadLine();
+
             Console.Write("Суть обращения: ");
-            string? text = Console.ReadLine();
-            Console.Write("Назначить сотрудника (ID): ");
-            string? empId = Console.ReadLine();
+            string? requestText = Console.ReadLine();
+
+            Console.Write("Назначить сотрудника (ID, можно оставить пустым): ");
+            string? empIdInput = Console.ReadLine();
+
+            if (string.IsNullOrWhiteSpace(fio) ||
+                string.IsNullOrWhiteSpace(requestText))
+            {
+                Console.WriteLine("\n[ОШИБКА] Необходимо заполнить данные обращения.");
+                return;
+            }
+
+            int? employeeId = null;
+
+            if (!string.IsNullOrWhiteSpace(empIdInput))
+            {
+                if (!int.TryParse(empIdInput, out int parsedId) || parsedId <= 0)
+                {
+                    Console.WriteLine("\n[ОШИБКА] Некорректный ID сотрудника.");
+                    return;
+                }
+
+                employeeId = parsedId;
+            }
 
             using var connection = DatabaseContext.CreateConnection();
+            using var transaction = connection.BeginTransaction();
 
-            // ОШИБКА 1: Отсутствие транзакции
-            // Если упадет вторая операция (аудит), первая останется в базе.
-            using var cmdInsert = connection.CreateCommand();
-            cmdInsert.CommandText = $"INSERT INTO CitizenRequests (citizen_fio, request_text, assigned_employee_id, status) VALUES ('{fio}', '{text}', {empId}, 'В работе')";
-            cmdInsert.ExecuteNonQuery();
+            try
+            {
+                using var cmdInsert = connection.CreateCommand();
+                cmdInsert.Transaction = transaction;
 
-            // ОШИБКА 2: Небезопасный и неконсистентный аудит
-            // Разработчик просто «забыл» передать текущего пользователя и пишет константу,
-            // а если упадет связь, событие аудита потеряется навсегда
-            using var cmdAudit = connection.CreateCommand();
-            cmdAudit.CommandText = $"INSERT INTO AuditLog (action_time, user_login, action_description) VALUES ('{DateTime.UtcNow:o}', 'UNKNOWN_OPERATOR', 'Создано обращение гражданина: {fio}')";
-            cmdAudit.ExecuteNonQuery();
+                cmdInsert.CommandText = @"
+                    INSERT INTO CitizenRequests
+                    (citizen_fio, request_text, assigned_employee_id, status)
+                    VALUES
+                    (@fio, @requestText, @employeeId, 'В работе');
+                ";
 
-            Console.WriteLine("[УСПЕХ] Обращение успешно зафиксировано.");
+                cmdInsert.Parameters.AddWithValue("@fio", fio);
+                cmdInsert.Parameters.AddWithValue("@requestText", requestText);
+
+                cmdInsert.Parameters.AddWithValue(
+                    "@employeeId",
+                    employeeId.HasValue ? employeeId.Value : DBNull.Value
+                );
+
+                cmdInsert.ExecuteNonQuery();
+
+                using var cmdAudit = connection.CreateCommand();
+                cmdAudit.Transaction = transaction;
+
+                cmdAudit.CommandText = @"
+                    INSERT INTO AuditLog
+                    (action_time, user_login, action_description)
+                    VALUES
+                    (@actionTime, @userLogin, @description);
+                ";
+
+                cmdAudit.Parameters.AddWithValue(
+                    "@actionTime",
+                    DateTime.UtcNow.ToString("o")
+                );
+
+                cmdAudit.Parameters.AddWithValue(
+                    "@userLogin",
+                    UserSession.CurrentEmployee.Login
+                );
+
+                cmdAudit.Parameters.AddWithValue(
+                    "@description",
+                    "Создано обращение гражданина: " + fio
+                );
+
+                cmdAudit.ExecuteNonQuery();
+
+                transaction.Commit();
+
+                Console.WriteLine("\n[УСПЕХ] Обращение успешно зафиксировано.");
+            }
+            catch
+            {
+                transaction.Rollback();
+
+                Console.WriteLine(
+                    "\n[ОШИБКА] Не удалось сохранить обращение. Изменения отменены."
+                );
+            }
         }
     }
 }
